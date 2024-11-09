@@ -1,5 +1,6 @@
 # Divvy-Bike-Analysis
 Data Analysis of a bike-sharing company, including SQL and R scripts for analysis and data cleaning.
+The data used in this analysis comes from Divvy's bike-sharing dataset, covering the period from March 2023 to February 2024. You can access the dataset [here](https://divvy-tripdata.s3.amazonaws.com/index.html).
 
 ## Repository Contents
 
