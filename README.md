@@ -5,7 +5,7 @@ The data used in this analysis comes from Divvy's bike-sharing dataset, covering
 ## Repository Contents
 
 - **documentation/Project_Report_Divvy_Bike_Share_Analysis.docx**: Project presentation and overview.
-- **scripts/Divvy_bike_analysis.R**: R script for data analysis.
+- **scripts/Divvy_bike_analysis.Rmd**: R script for data analysis.
 - **scripts/Cleaning_Divvy_Analysis.sql**: SQL script for data cleaning.
 
 ## Tableau Public :
