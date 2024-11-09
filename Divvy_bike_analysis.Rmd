@@ -1,0 +1,1530 @@
+---
+title: "Divvy Bike Ride Analysis"
+output: 
+  word_document:
+    toc: true
+    toc_depth: 2
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, include=FALSE}
+
+# Install packages 
+install.packages(c("DBI", "RMySQL", "dplyr", "tidyr", "lubridate", 
+                   "stringr", "data.table", "car", "psych", "lmtest", 
+                   "ggplot2", "scales", "RColorBrewer", "plotly", 
+                   "corrplot", "sf", "ggmap", "leaflet", "caret", "gridExtra","patchwork"))
+
+```
+
+```{r library, echo=FALSE}
+library(DBI)
+library(RMySQL)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(corrplot)
+library(scales)
+library(viridis)
+library(stats)
+library(gridExtra)
+library(patchwork)
+
+```
+
+# 1. Introduction
+
+This project aims to analyze the Divvy bike ride data to better understand the behavior of casual and member users in Chicago. We will explore ride patterns, temporal trends, spatial distributions, and the types of bikes used.
+
+# 2. Data Import and Preparation
+
+We begin by importing the data from the MySQL database and preparing it for analysis. Appropriate data cleaning steps will be applied, including converting columns to correct data types.
+
+```{r import data, echo=FALSE}
+
+# Connect to MySQL database and retrieve the dataset
+con <- dbConnect(RMySQL::MySQL(), dbname = "Case_study_velo", host = "localhost", username = "root", password = "")
+df <- dbGetQuery(con, "SELECT * FROM velo_combined")
+dbDisconnect(con)
+
+# Data Cleaning: Convert columns to appropriate types
+df$member_casual <- as.factor(df$member_casual)
+df$rideable_type <- as.factor(df$rideable_type)
+df$started_day <- as.factor(df$started_day)
+df$started_day <- factor(df$started_day, 
+                         levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+df$started_at <- as.POSIXct(df$started_at, format = "%Y-%m-%d %H:%M:%S")
+df$ended_at <- as.POSIXct(df$ended_at, format = "%Y-%m-%d %H:%M:%S")
+df$start_station_name <- as.character(df$start_station_name)
+df$end_station_name <- as.character(df$end_station_name)
+```
+
+```{r data}
+head(df)
+```
+
+# 3. Data Exploration
+
+## 3.1 Structure and Missing Values
+
+We inspect the data structure and check for any missing values in the dataset, which can affect the accuracy of our insights.
+
+```{r}
+# Check column types and structure
+str(df)
+
+# Check for missing values in each column
+missing_values <- sapply(df, function(x) sum(is.na(x)))
+print(missing_values)
+
+```
+
+## 3.2 Ride Length Distribution
+
+We visualize the distribution of ride_length_minute across all users to understand the general pattern.
+
+```{r}
+
+# Histogram for ride_length_minute for all users
+ggplot(df, aes(x = ride_length_minute)) + 
+  geom_histogram(binwidth = 1, fill = "blue", color = "white") +
+  labs(title = "Distribution of Ride Length (minutes)", 
+       x = "Ride Length (minutes)", 
+       y = "Frequency") +
+  theme_minimal()
+```
+
+Since we are particularly interested in casual users, we filter the data to focus on them and examine their ride length distribution.
+
+```{r}
+# Filter data for casual users
+df_casual <- df %>% filter(member_casual == "casual")
+
+# Histogram for ride length of casual users
+ggplot(df_casual, aes(x = ride_length_minute)) +
+  geom_histogram(binwidth = 5, fill = "darkorange", color = "white") +
+  labs(title = "Distribution of Ride Length for Casual Users",
+       x = "Ride Length (minutes)",
+       y = "Count") +
+  theme_minimal()
+```
+
+## 3.3. Identifying Outliers Based on Percentiles
+
+We now calculate the 99th percentile of the ride length for all users and casual users specifically, as rides above this threshold may be considered outliers.
+
+For all users :
+
+```{r}
+# 99th percentile for all users
+percentile_99_all <- quantile(df$ride_length_minute, 0.99)
+percentile_99_all
+```
+```{r}
+# Histogram with 99th percentile marked for all users
+ggplot(df, aes(x = ride_length_minute)) +
+  geom_histogram(binwidth = 5, fill = "blue", color = "white", alpha = 0.7) +
+  geom_vline(xintercept = percentile_99_all, color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Ride Length Distribution with 99th Percentile Threshold", x = "Ride Length (minutes)", y = "Frequency") +
+  theme_minimal()
+```
+
+For casual members : 
+
+```{r}
+# 99th percentile for casual users
+percentile_99_casual <- quantile(df_casual$ride_length_minute, 0.99)
+percentile_99_casual
+```
+```{r}
+# Histogram with 99th percentile marked for casual users
+ggplot(df_casual, aes(x = ride_length_minute)) +
+  geom_histogram(binwidth = 5, fill = "darkorange", color = "white", alpha = 0.7) +
+  geom_vline(xintercept = percentile_99_casual, color = "red", linetype = "dashed", size = 1) +
+  labs(title = "Ride Length Distribution with 99th Percentile Threshold", x = "Ride Length (minutes)", y = "Frequency") +
+  theme_minimal()
+```
+
+## 3.4. Focusing on Long Rides
+
+To further investigate extreme rides, we calculate descriptive statistics for casual users whose rides last longer than 125 minutes.
+
+```{r}
+# Descriptive statistics for casual users with ride length >= 125 minutes
+summary(df_casual$ride_length_minute[df_casual$ride_length_minute >= 125])
+```
+
+We visualize the distribution of rides that last between 100 and 300 minutes for all users.
+
+```{r}
+# Histogram for ride length between 100 and 300 minutes
+ggplot(df %>% filter(ride_length_minute >= 100 & ride_length_minute <= 300), 
+       aes(x = ride_length_minute)) +
+  geom_histogram(binwidth = 5, fill = "blue", color = "white") +
+  labs(title = "Distribution of ride Length (100 to 300 minutes)", 
+       x = "Ride Length (minutes)", 
+       y = "Frequency") +
+  theme_minimal()
+```
+
+We focus on casual users with rides between 100 and 300 minutes. 
+
+```{r}
+# Histogramm for ride length between 100 and 300 minutes for casual user 
+ggplot(df_casual %>% filter(ride_length_minute >= 90 & ride_length_minute <= 300), 
+       aes(x = ride_length_minute)) +
+  geom_histogram(binwidth = 5, fill = "darkorange", color = "white") +
+  labs(title = "Distribution of ride Length (100 to 300 minutes) for casual users", 
+       x = "Ride Length (minutes)", 
+       y = "Frequency") +
+  theme_minimal()
+```
+
+## 3.5. Data Cleaning
+
+Based on the analysis, we decide to clean the dataset by removing rides longer than 125 minutes, which represent the 99th percentile of casual rides, to avoid the influence of extreme values on our results.
+
+```{r data cleaning}
+# Remove rides longer than 125 minutes
+df <- df %>% filter(ride_length_minute <= 125)
+
+# Update the filtered data for casual users
+df_casual <- df %>% filter(member_casual == "casual")
+```
+
+```{r export cleaned data}
+#total_rows <- nrow(df)
+#half <- ceiling(total_rows / 2)
+#write.csv(df[1:half, ], file = "~/Desktop/data_bike_cleaned_part_1.csv", row.names = FALSE)
+#write.csv(df[(half + 1):total_rows, ], file = "~/Desktop/data_bike_cleaned_part_2.csv", row.names = FALSE)
+
+
+#  write.csv(df, file = "~/Desktop/data_bike_cleaned_.csv", row.names = FALSE)
+write.csv(df_casual, file = "~/Desktop/data_casual_cluster.csv", row.names = FALSE)
+
+```
+
+# 5. Ride Length Analysis
+
+We begin by exploring the general characteristics of the dataset and performing various analyses to understand the distribution of ride lengths across both casual and member users.
+
+## 5.1. Overview of the Dataset
+
+We start by counting the total number of rides in the dataset.
+
+```{r}
+nrow(df)
+```
+
+We now count the distribution of casual and member users.
+```{r}
+table(df$member_casual)
+```
+
+## 5.2. Ride Length Distribution, Normality Check, and Statistical Tests
+
+We create a QQ plot for ride lengths of casual users to check if the distribution follows a normal law.
+```{r}
+# QQ plot for ride_length for casual users
+qqnorm(df$ride_length[df$member_casual == "casual"], 
+       main = "QQ Plot of Ride Length for Casual Users", 
+       col = "darkorange",  
+       pch = 16)         
+qqline(df$ride_length[df$member_casual == "casual"], col = "black") 
+
+```
+
+The ride lengths do not follow a normal distribution. Therefore, we proceed with non-parametric tests for further analysis.
+
+1. We conduct a Mann-Whitney U test to test if there is a statistically significant difference between the ride lengths of members and casual users.
+
+```{r}
+# Mann-Whitney U Test
+wilcox.test(ride_length_minute ~ member_casual, data = df)
+
+# The null hypothesis (H0) states that there is no significant difference 
+# between the ride lengths of members and casual users. 
+# Given the results of the Wilcoxon rank-sum test, which produced a 
+# p-value < 2.2e-16, we reject the null hypothesis. 
+# This indicates that the observed difference in ride lengths is 
+# statistically significant, suggesting that there is indeed an effect 
+# and a difference in ride lengths between members and casual users.
+
+```
+
+The results (p-value < 2.2e-16) suggest a statistically significant difference between the ride lengths of members and casual users.
+
+
+2. We use also the Kruskal-Wallis test to check for differences in ride length between user types.
+
+```{r}
+# Kruskal-Wallis Test
+kruskal.test(ride_length_minute ~ member_casual, data = df)
+```
+
+These findings (The chi-squared statistic of 198173 and the extremely low p-value) are consistent with the results obtained from the Wilcoxon test, which also indicated significant differences in ride lengths between user types. Together, these analyses reinforce the conclusion that members and casual users exhibit distinct patterns in ride duration.
+
+3. We calculates the correlation between the ride length and user type :
+
+```{r}
+df$member_casual_binary <- ifelse(df$member_casual == "member", 1, 0)
+cor(df$ride_length_minute, df$member_casual_binary, use = "complete.obs")
+```
+
+The resulting correlation suggests a slight tendency for members to have shorter rides on average, although the relationship is not strong.
+
+
+## 5.3. Visualizing the Ride Length Distributions
+
+We visualize the ride lengths of both user types using a density plot.
+```{r}
+ggplot(df, aes(x = ride_length_minute, fill = member_casual)) +
+  geom_density(alpha = 0.3) +  
+  scale_fill_manual(values = c("casual" = "darkorange", "member" = "steelblue1")) +
+  scale_color_manual(values = c("casual" = "darkorange4", "member" = "steelblue4")) +
+  labs(
+    title = "Density Plot of Ride Lengths by User Type",
+    x = "Ride Length (minutes)",
+    y = "Density",
+    fill = "User Type"
+  ) +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+    panel.grid.minor = element_blank(),  
+    panel.grid.major = element_line(color = "gray90") 
+  )
+
+```
+
+The density plot reveals distinct patterns in ride lengths for members and casual users.
+- Members tend to have a higher density for shorter rides, likely reflecting routine or commute-oriented usage.
+- Casual users show a higher density for longer rides, suggesting recreational or leisure-based usage.
+
+We further explore the distribution by visualizing the ride lengths in 5-minute intervals.
+
+```{r}
+# Histogram of ride length
+ggplot(df, aes(x = cut(ride_length_minute, breaks = seq(0, 125, by = 5), right = FALSE), 
+               fill = member_casual)) +
+  geom_bar(position = "stack") + 
+  scale_fill_manual(values = c("casual" = "darkorange", "member" = "steelblue1")) +  
+  labs(title = "Number of Rides by Length (5-Minute Intervals)",
+       x = "Ride Length (minutes)",
+       y = "Number of Rides",
+       fill = "User Type" ) +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+    panel.grid.minor = element_blank(),  
+    panel.grid.major = element_line(color = "gray90") 
+  )
+```
+The histogram shows that both member and casual user types peak in rides lasting 5 to 10 minutes. However, distinct preferences emerge afterward:
+
+Members prefer shorter rides (0-5 minutes), 
+Casual users favor longer rides (10-15 minutes).
+
+## 5.4. Descriptive Statistics for Ride Lengths
+
+We calculate the descriptive statistics (mean, median, etc.) for both casual and member users.
+
+```{r}
+descriptive_stats <- df %>%
+  group_by(member_casual) %>%
+  summarise(
+    mean_duration = mean(ride_length_minute, na.rm = TRUE),
+    median_duration = median(ride_length_minute, na.rm = TRUE),
+    min_duration = min(ride_length_minute, na.rm = TRUE),
+    max_duration = max(ride_length_minute, na.rm = TRUE),
+    q1_duration = quantile(ride_length_minute, 0.25, na.rm = TRUE),
+    q3_duration = quantile(ride_length_minute, 0.75, na.rm = TRUE)
+  )
+
+print(descriptive_stats)
+
+```
+
+Conclusion:
+
+Casual users tend to prefer slightly longer trips (mean: 17.9 minutes, median: 12 minutes, preference for trips between 5-15 minutes)
+Members prefer shorter trips (mean: 11.5 minutes, median: 8 minutes, preference for trips between 0-10 minutes)
+
+To encourage casual riders to subscribe, a strategy could be offering benefits for trips between 10-20 minutes, like discounted rates for frequent users or a trial subscription.
+
+
+# 6. Temporal Trends Analysis
+
+In this section, we explore temporal patterns in ride behavior, including the distribution of rides by hour, day, and month for both casual and member users. We also assess the relationship between ride length and the time variables.
+
+## 6.1. Ride Length by Day of the Week
+
+1. Visualization of ride length through the week
+
+We visualize the distribution of ride lengths across different days for member and casual users.
+
+Heatmap for Members :
+
+```{r}
+
+# For members
+ggplot(df %>% filter(member_casual == "member"), 
+       aes(x = ride_length_minute,
+           y = started_day, 
+           fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 10) + 
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Heatmap of Usage by ride length and Day (Members)", 
+       x = "Minutes of ride", 
+       y = "Day of Week") + 
+theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+```
+
+Heatmap for Casual Users :
+
+```{r}
+
+# For casual users
+ggplot(df %>% filter(member_casual == "casual"), 
+       aes(x = ride_length_minute,
+           y = started_day, 
+           fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 10) + 
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Heatmap of Usage by ride length and Day (Casuals)", 
+       x = "Minutes of ride", 
+       y = "Day of Week") + 
+theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+```
+
+To gain deeper insight, we zoom into rides that are shorter than 60 minutes.
+
+Heatmap for Members :
+
+```{r}
+# For members
+ggplot(df %>% filter(member_casual == "member", ride_length_minute < 60), 
+       aes(x = ride_length_minute,
+           y = started_day, 
+           fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 30) + 
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Heatmap of Usage by ride length and Day (Members)", 
+       x = "Minutes of ride", 
+       y = "Day of Week") + 
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+```
+
+Heatmap for Casual Users :
+
+```{r}
+# For casual users
+ggplot(df %>% filter(member_casual == "casual",ride_length_minute < 60), 
+       aes(x = ride_length_minute,
+           y = started_day, 
+           fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 30) + 
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Heatmap of Usage by ride length and Day (Casuals)", 
+       x = "Minutes of ride", 
+       y = "Day of Week") + 
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+```
+
+2. Weekday vs. Weekend ride length Comparison
+
+We summarize the ride length for both user types, comparing weekends and weekdays.
+
+```{r}
+
+# Create a summary based on the `started_day` column to check if there are other habits in weekends
+
+ride_duration_comparison <- df %>%
+  filter(started_day %in% c("Saturday", "Sunday")) %>%
+  group_by(member_casual) %>%
+  summarise(mean_ride_length_weekend = mean(ride_length_minute, na.rm = TRUE),
+            median_ride_length_weekend = median(ride_length_minute, na.rm = TRUE),
+            count_weekend = n()) %>%
+  bind_rows(
+    df %>%
+      filter(!started_day %in% c("Saturday", "Sunday")) %>%
+      group_by(member_casual) %>%
+      summarise(mean_ride_length_weekday = mean(ride_length_minute, na.rm = TRUE),
+                median_ride_length_weekday = median(ride_length_minute, na.rm = TRUE),
+                count_weekday = n())
+  )
+
+print(ride_duration_comparison)
+```
+
+Both user types tends to ride longer on weekends but even more true for casual members.
+
+We check if ride lengths differ significantly between weekends and weekdays for both user types using Wilcoxon Rank Sum Test.
+
+
+```{r}
+
+# Wilcoxon Test for Casual Users
+wilcox_test_result_casual <- wilcox.test(
+  df$ride_length_minute[df$member_casual == "casual" & df$started_day %in% c("Saturday", "Sunday")], 
+  df$ride_length_minute[df$member_casual == "casual" & !df$started_day %in% c("Saturday", "Sunday")]
+)
+
+# Wilcoxon Test for Member Users
+wilcox_test_result_member <- wilcox.test(
+  df$ride_length_minute[df$member_casual == "member" & df$started_day %in% c("Saturday", "Sunday")], 
+  df$ride_length_minute[df$member_casual == "member" & !df$started_day %in% c("Saturday", "Sunday")]
+)
+
+# Print results
+wilcox_test_result_casual
+wilcox_test_result_member
+
+```
+
+Both tests demonstrate significant differences in ride lengths based on user type and the day of the week. These findings underscore the importance of tailoring strategies for user engagement and promotion based on the observed ride length behaviors for both casual and member users during weekends and weekdays.
+
+Summary of Ride Length by User Type and Day Type :
+
+```{r}
+
+# Summary statistics for casual and member users
+summary_stats <- df %>%
+  group_by(member_casual, ifelse(started_day %in% c("Saturday", "Sunday"), "Weekend", "Weekday")) %>%
+  summarise(
+    mean_ride_length = mean(ride_length_minute, na.rm = TRUE),
+    median_ride_length = median(ride_length_minute, na.rm = TRUE),
+    count = n()
+  )
+
+print(summary_stats)
+
+```
+
+Casual users appear to utilize the bike-sharing service for longer rides, especially on weekends, potentially for recreational purposes.
+Member users, likely commuting or using the service more utilitarian, tend to have shorter average rides.
+
+```{r}
+df_casual_weekends <- df_casual %>%
+  mutate(Weekday_Weekend = ifelse(started_day %in% c("Saturday", "Sunday"), "Weekend", "Weekday"))
+
+# Calculate means and medians
+summary_stats <- df_casual_weekends %>%
+  group_by(Weekday_Weekend) %>%
+  summarise(mean = mean(ride_length_minute, na.rm = TRUE),
+            median = median(ride_length_minute, na.rm = TRUE))
+
+# Create the boxplot
+p <- ggplot(df_casual_weekends, aes(x = Weekday_Weekend, y = ride_length_minute)) +
+  geom_boxplot(fill = "darkorange") +
+  geom_point(data = summary_stats, aes(x = Weekday_Weekend, y = mean), color = "black", size = 2, shape = 16) + 
+  geom_text(data = summary_stats, aes(x = Weekday_Weekend, y = mean, label = paste("Mean:", round(mean, 1))), 
+            vjust = -1.5, color = "black", size = 4, nudge_x = 0.2) + 
+  geom_point(data = summary_stats, aes(x = Weekday_Weekend, y = median), color = "black", size = 2, shape = 17) + 
+  geom_text(data = summary_stats, aes(x = Weekday_Weekend, y = median, label = paste("Median:", round(median, 1))), 
+            vjust = 2.3, color = "black", size = 4, nudge_x = 0.2) + 
+  labs(title = "Ride Length by Weekday vs Weekend",
+       y = "Ride Length (minutes)",
+       x = "") +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11, face = "bold"),
+  )
+
+# Display the plot
+print(p)
+```
+  
+A strategy can be Weekend Promotions: Offer a discount for rides over 15 or 20 minutes on weekends to encourage longer trips (average weekend ride is 20 minutes, average median 14).
+
+
+## 6.2. Ride Length by Hour of the Day 
+
+We compute the Spearman correlation between the hour of the day and ride length to assess any relationship.
+
+```{r}
+cor.test(as.numeric(format(as.POSIXct(df$started_at), "%H")), df$ride_length_minute, method = "spearman")
+```
+
+The Spearman correlation test reveals a very weak positive correlation (rho = 0.054) between the hour of the day and ride length. Although statistically significant (p-value < 2.2e-16), the strength of the relationship is minimal, indicating that the time of day has little influence on the duration of rides. 
+
+Therefore, time of day is not a strong predictor of ride length for this dataset.
+
+## 6.3. Numbers of Rides by Hour of the Day
+
+We compare the number of rides by hour for casual and member users.
+
+```{r}
+ggplot(df, aes(x = format(as.POSIXct(started_at), "%H"), fill = member_casual)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("casual" = "darkorange", "member" = "steelblue1"),
+                    name = "User Type",
+                    labels = c("casual" = "Casual", "member" = "Member")) +
+  labs(title = "Number of Rides by Hour for Casual and Member Users",
+       x = "Hour of the Day",
+       y = "Number of Rides") +
+ theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+    panel.grid.minor = element_blank(),  
+    panel.grid.major = element_line(color = "gray90") 
+  )
+
+```
+The histogram reveals distinct usage patterns for casual and member users:
+
+Member Users: Rides peak around 8 AM and 5 PM, indicating that members primarily use the service for commuting to work or school.
+Casual Users: In contrast, casual rides are highest between 12AM and 6 PM, suggesting recreational usage during leisure time.
+
+To convert casual users into members, consider introducing flexible membership plans. A recreational membership option offering discounts for rides during peak casual hours (12 AM - 6 PM) could effectively align with their usage patterns and encourage more frequent rides.
+
+
+We create heatmaps to visualize the number of rides for members and casual users across different hours of the day and days of the week.
+
+Heatmap for Members :
+
+```{r}
+# For members
+ggplot(df %>% filter(member_casual == "member"), 
+       aes(x = as.numeric(format(as.POSIXct(started_at), "%H")),
+           y = started_day, 
+           fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 24) + 
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Heatmap of Usage by Hour and Day (Members)", 
+       x = "Hour of Day", 
+       y = "Day of Week") + 
+theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+```
+
+Heatmap for Casual Users :
+
+```{r}
+# For casual users
+ggplot(df %>% filter(member_casual == "casual"), 
+       aes(x = as.numeric(format(as.POSIXct(started_at), "%H")),
+           y = started_day, 
+           fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 24) + 
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Heatmap of Usage by Hour and Day (Casuals)", 
+       x = "Hour of Day", 
+       y = "Day of Week") + 
+theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+```
+
+The heatmap reveals distinct usage patterns among members and casual users.
+
+Members predominantly utilize bikes during weekday commuting hours, highlighting their transportation needs. 
+
+In contrast, casual users show significant activity on Saturdays, particularly in the early afternoon. Sundays also exhibit increased usage, and late afternoon on weekdays.
+
+To capitalize on these patterns, a recomandation is implementing special promotions for casual users on Saturdays to drive engagement during their peak usage times and encourage them to consider membership options.
+
+## 6.4.Number of Rides by Day of the Week
+
+We compare the number of rides for casual and member users across different days of the week.
+
+```{r}
+# Plot comparing the number of rides by days for casual and member users 
+ggplot(df, aes(x = factor(started_day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")), fill = member_casual)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("casual" = "darkorange", "member" = "steelblue1"),
+                    name = "User Type",
+                    labels = c("casual" = "Casual", "member" = "Member")) +
+  labs(title = "Number of Rides by day",
+       x = "Day",
+       y = "Number of Rides") +
+ theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+
+```
+
+## 6.5. Rides by Month
+
+Finally, we compare the number of rides for casual and member users across different months.
+
+```{r}
+# Plot comparing the number of rides by months for casual and member users 
+ggplot(df, aes(x = as.factor(format(as.POSIXct(started_at), "%m")), fill = member_casual)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("casual" = "darkorange", "member" = "steelblue1"),
+                    name = "User Type",
+                    labels = c("casual" = "Casual", "member" = "Member")) +
+  labs(title = "Number of Rides by months",
+       x = "Month",
+       y = "Number of Rides") +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+  )
+
+```
+The data shows that casual users have a peak in rides from May to September, with the highest usage in July, indicating a preference for summer months. Members also show increased activity from May through October, peaking in August, likely reflecting both commuting and recreational use.
+
+To maximize summer engagement, the marketing team could:
+
+- Launch summer ride passes from June to August for casual users.
+- Provide early-bird discounts in May to boost summer sign-ups.
+
+# 7. Type of Bike Analysis
+
+This analysis aims to explore the relationship between user types (members vs. casual users) and their preferences for different types of bikes (electric vs. classic).
+
+## 7.1. Create a Contingency Table
+
+We create a contingency table showing the count of user types by bike types :
+
+```{r}
+user_bike_table <- table(df$member_casual, df$rideable_type)
+print(user_bike_table)
+```
+
+## 7.2. Chi-square Test for Independence
+
+We process this test to check if there is a significant association between user type and bike type.
+
+```{r}
+chisq.test(table(df$member_casual, df$rideable_type))
+```
+
+The Chi-square test shows a significant association between user type (member vs. casual) and e-bike usage.
+Since the p-value is far below 0.05, we reject the null hypothesis, indicating that user type and e-bike usage are not independent. This suggests that members and casual users have different preferences for e-bikes.
+
+## 7.3. Visualization of Preferences
+
+```{r}
+
+# Create the bar plot
+ggplot(df, aes(x = member_casual, fill = rideable_type)) +
+  geom_bar(position = "dodge", width = 0.6) +  
+  scale_fill_manual(values = c("electric_bike" = "#FFC300", "classic_bike" = "#4CAF50"),
+                    labels = c("electric_bike" = "E-bike", "classic_bike" = "Classic Bike")) +  
+  labs(title = "Proportion of E-bike and Classic Bike Usage",
+       x = "User Type",
+       y = "Number of Rides",
+       fill = "Bike Type") +
+  scale_x_discrete(labels = c("member" = "Members", "casual" = "Casual")) + 
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+
+```
+Casual riders show a preference for electric bikes, while members tend to favor classic bikes.
+
+## 7.4. Analyze Preferences on Weekends vs Weekdays
+
+
+Let's see the preferences on Weekends for Casual Users through a Chi-squared test :
+
+First, we create a contingency table for rideable type vs day type for casual user.
+
+```{r}
+df_casual$day_type <- ifelse( df_casual$started_day %in% c("Saturday", "Sunday"), "Weekend", "Weekday")
+
+contingency_table <- table(df_casual$rideable_type, df_casual$day_type)
+print(contingency_table)
+```
+
+```{r}
+# Create a dataframe for the counts
+counts <- data.frame(
+  rideable_type = c("Classic Bike", "Electric Bike"),
+  Weekday = c(555915, 687857),
+  Weekend = c(354193, 338356)
+)
+
+# Calculate totals
+counts$Total <- rowSums(counts[2:3])
+
+# Calculate proportions
+counts$Proportion_Weekday <- counts$Weekday / counts$Total
+counts$Proportion_Weekend <- counts$Weekend / counts$Total
+
+# Print the results
+print(counts)
+```
+
+```{r}
+counts_long <- counts %>%
+  pivot_longer(cols = c("Weekday", "Weekend"), names_to = "Day_Type", values_to = "Count")
+
+# Create the bar plot 
+ggplot(counts_long, aes(x = Day_Type, y = Count, fill = rideable_type)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.6) +
+  scale_fill_manual(values = c("Classic Bike" = "#4CAF50", "Electric Bike" = "#FFC300")) +  
+  labs(title = "Number of Rides by Bike Type for Casual users",
+       x = "Day Type",
+       y = "Number of Rides",
+       fill = "Bike Type") +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+  
+```
+
+Now, we perform the Chi-squared test for casual user preferences : 
+
+```{r}
+chi_squared_result <- chisq.test(contingency_table)
+print(chi_squared_result)
+```
+
+There is a significant association between the type of bike chosen (classic vs. electric) and the day of the week (weekday vs. weekend) among casual users. The null hypothesis of no association is rejected.
+
+Casual users prefer electric bikes over classic bikes. However, the preference for electric bikes is stronger during weekdays.
+
+On weekends, there is a higher usage of classic bikes over electric, indicating that casual users might choose classic bikes for recreational rides during their leisure time.
+
+This suggests a dual marketing approach:
+
+Electric Bike Promotions: Highlight convenience and efficiency for weekday riders, using targeted advertising and special offers to increase electric bike rentals.
+Classic Bike Engagement: Develop weekend events and incentives centered around classic bike rides, appealing to users looking for leisure experiences.
+
+
+## 7.5. Analyze Ride Lengths for Casual Users by Bike Type
+
+We create a boxplot to compare ride lengths based on bike type for casual users :
+
+```{r}
+ggplot(df_casual, aes(x = rideable_type, y = ride_length_minute, fill = rideable_type)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("classic_bike" = "#4CAF50", "electric_bike" = "#FFC300"), 
+                    name = "Bike Type", 
+                    labels = c("classic_bike" = "Classic Bike", "electric_bike" = "E-Bike")) + 
+  labs(title = "Ride Lengths for Casual Users by Bike Type",
+       x = "Bike Type",
+       y = "Ride Length (minutes)") +
+  scale_x_discrete(labels = c("classic_bike" = "Classic Bike", "electric_bike" = "E-Bike")) +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "none",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+
+  
+```
+
+We create an overlapping histogram to compare ride lengths based on bike type for casual users :
+
+```{r}
+ggplot(df_casual, aes(x = ride_length_minute, fill = rideable_type)) +
+  geom_histogram(position = "identity", alpha = 0.7, bins = 30, color = "black") +
+  scale_fill_manual(values = c("classic_bike" = "#4CAF50AA", "electric_bike" = "#FFC300"), 
+                    name = "Bike Type", 
+                    labels = c("classic_bike" = "Classic Bike", "electric_bike" = "E-Bike")) +
+  labs(title = "Ride Lengths for Casual Users by Bike Type",
+       x = "Ride Length (minutes)",
+       y = "Number of Rides") +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+ 
+```
+
+We see that casual users tend to prefer classic bikes for longer rides and electric bikes for shorter, faster trips. 
+
+# 8. Spatial Analysis
+
+In this section, we conduct a spatial analysis of bike ride data in Chicago, focusing on user behavior and geographic distribution. We will create heatmaps to visualize ride starts for members and casual users, analyze loop rides, and identify the most popular starting stations for loop rides.
+
+## 8.1. Data Preparation
+
+Before performing the spatial analysis, we will round the coordinates of ride starts to minimize noise in the data. 
+
+```{r}
+# Round coordinates for better clarity in visualization
+df_filtered <- df %>%
+  mutate(start_lng = round(start_lng, 5),
+         start_lat = round(start_lat, 5))
+```
+
+
+## 8.2. Heatmaps of Ride Starts
+
+We  create heatmaps to visualize the geographic distribution of ride starts for both members and casual users. These visualizations will help us identify areas of high activity.
+
+```{r}
+install.packages("patchwork")
+library(patchwork)
+
+# Heatmap for Member Ride Starts
+member_heatmap <- ggplot(df_filtered[df_filtered$member_casual == "member", ], aes(x = start_lng, y = start_lat)) +
+  stat_bin2d(bins = 30, aes(fill = after_stat(count)), alpha = 0.5) +
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Members Ride Starts",
+       x = "Longitude",
+       y = "Latitude") +
+  coord_fixed() + 
+  theme_minimal(base_size = 14, base_family = "Arial")
+
+# Heatmap for Casual Ride Starts
+casual_heatmap <- ggplot(df_filtered[df_filtered$member_casual == "casual", ], aes(x = start_lng, y = start_lat)) +
+  stat_bin2d(bins = 30, aes(fill = after_stat(count)), alpha = 0.5) +
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Casual Users Ride Starts",
+       x = "Longitude",
+       y = "Latitude") +
+  coord_fixed() + 
+  theme_minimal(base_size = 14, base_family = "Arial")
+
+# Combine the plots using patchwork
+member_heatmap + casual_heatmap
+```
+Both heatmaps for member and casual ride starts show peak activity in the central eastern part of Chicago, near Lake Michigan. This indicates a strong preference for rides in this area, likely due to the concentration of attractions and recreational spots.
+
+## 8.3. Analysis of Loop Rides
+
+We analyze the loop rides where users start and end at the same station. This analysis will help us understand user preferences regarding station choice.
+
+We visualize percentage of loop rides by user type :
+
+```{r}
+# Calculate total rides per user type
+total_rides <- df %>%
+  group_by(member_casual) %>%
+  summarise(total_count = n(), .groups = 'drop')
+
+# Count loop rides (start station = end station)
+loop_rides <- df %>%
+  filter(!is.na(start_station_name) & !is.na(end_station_name) & 
+         start_station_name == end_station_name & 
+         !is.na(start_lng) & !is.na(start_lat) & 
+         trimws(start_station_name) != "" & 
+         trimws(end_station_name) != "") %>%
+  group_by(member_casual) %>%
+  summarise(loop_count = n(), .groups = 'drop')
+
+# Join dataframes to calculate loop ride percentage
+ride_data <- loop_rides %>%
+  left_join(total_rides, by = "member_casual") %>%
+  mutate(loop_percentage = (loop_count / total_count) * 100)
+
+# Visualize percentage of loop rides by user type
+ggplot(ride_data, aes(x = member_casual, y = loop_percentage, fill = member_casual)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(loop_percentage, 1), " %")), 
+            position = position_stack(vjust = 0.5), 
+            color = "black", size = 5) +
+  labs(title = "Percentage of Loop Rides by User Type",
+       x = "User Type",
+       y = "Percentage of Loop Rides (%)") +
+  scale_fill_manual(values = c("casual" = "darkorange", "member" = "steelblue1"),
+                    name = "User Type",
+                    labels = c("casual" = "Casual", "member" = "Member")) +
+  scale_x_discrete(labels = c("member" = "Members", "casual" = "Casual")) + 
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11)
+  )
+ 
+```
+The analysis reveals that 5.4% of rides by casual users are loop rides, where the starting and ending stations are the same. In contrast, only 1.6% of rides by members fall into this category.
+This indicates that casual riders are likely using bikes for leisurely trips, exploring familiar areas, while members tend to ride for more practical commuting purposes.
+
+We will create separate heatmaps for loop rides by user type, allowing us to visualize patterns in where these rides occur.
+
+```{r}
+df_loop_rides <- df %>%
+  filter(!is.na(start_station_name) & !is.na(end_station_name) & 
+         start_station_name == end_station_name & 
+         !is.na(start_lng) & !is.na(start_lat) & 
+         trimws(start_station_name) != "" & 
+         trimws(end_station_name) != "")
+```
+
+```{r}
+# Heatmap for Loop Rides of Casual Users
+df_loop_rides_casual <- df_loop_rides %>% filter(member_casual == "casual")
+p1 <- ggplot(df_loop_rides_casual, aes(x = start_lng, y = start_lat)) +
+  stat_bin2d(bins = 30, aes(fill = after_stat(count))) +
+  scale_fill_viridis_c(name = "Number of Rides") +
+  coord_equal() +
+  labs(title = "Loop Rides for Casual Users",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"))
+
+# Heatmap for Loop Rides of Member Users
+df_loop_rides_member <- df_loop_rides %>% filter(member_casual == "member")
+p2 <- ggplot(df_loop_rides_member, aes(x = start_lng, y = start_lat)) +
+  stat_bin2d(bins = 30, aes(fill = after_stat(count))) +
+  scale_fill_viridis_c(name = "Number of Rides") +
+  coord_equal() +
+  labs(title = "Loop Rides for Members",
+       x = "Longitude",
+       y = "Latitude") +
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  theme(
+    axis.text.x = element_text(size = 10, hjust = 1, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black"),
+    axis.title.x = element_text(size = 14, face = "bold"),
+    axis.title.y = element_text(size = 14, face = "bold"))
+
+# Arrange the plots side by side with the same size
+grid.arrange(p1, p2, ncol = 2)
+```
+In the visualizations, loop rides for members are more dispersed around the central areas of the city, indicating a broader usage pattern. In contrast, casual riders tend to utilize loop rides in a more concentrated area, suggesting a preference for specific locations.
+
+Finally, we will identify the most popular starting stations for loop rides. This information can inform station improvements and user engagement strategies.
+
+These are the top 10 most popular starting stations for loop rides for Casual Users : 
+
+```{r}
+# Prefered loop ride stations for casual users 
+top_loop_stations_casual <- df_loop_rides_casual %>%
+  group_by(start_station_name) %>%
+  summarise(loop_count = n(), .groups = 'drop') %>%
+  arrange(desc(loop_count)) %>%
+  slice_head(n = 10)
+
+top_loop_stations_casual
+```
+The analysis of loop ride starting stations for casual users reveals that Streeter Dr & Grand Ave and DuSable Lake Shore Dr & Monroe St are the top two locations. This suggests a strong preference for scenic waterfront routes and central attractions like Millennium Park and Shedd Aquarium. 
+
+
+# 9. Regression and Clustering Analysis
+
+## 9.1. Correlation Analysis for Casual Users
+
+1. Data Preparation
+
+We convert categorical variables into numeric format for analysis :
+
+- rideable_type and started_day are converted to numeric.
+- Extract the hour from started_at.
+- Create a binary variable member_casual_numeric to indicate casual users.
+
+```{r}
+df$rideable_type_numeric <- as.numeric(factor(df$rideable_type))
+df$started_day_type_numeric <- as.numeric(factor(df$started_day))
+df$started_hour <- as.numeric(format(as.POSIXct(df$started_at), "%H"))
+df$member_casual_numeric <- ifelse(df$member_casual == "casual", 1, 0)
+```
+
+2. Correlation Matrix
+
+We compute the correlation matrix for the selected variables and display it.
+
+```{r}
+
+# Extract relevant columns for correlation analysis
+correlation_data <- df %>%
+  select(member_casual_numeric, ride_length_minute, rideable_type_numeric, started_day_type_numeric, started_hour)
+
+# Correlation Matrix Calculation
+correlation_matrix <- cor(correlation_data, use = "complete.obs")
+print(correlation_matrix)
+```
+
+We use the corrplot package to visualize the correlation matrix.
+
+```{r}
+
+# Change the variable names
+colnames(correlation_matrix) <- c("User Type", 
+                                   "Ride Length (minutes)", 
+                                   "Bike Type", 
+                                   "Day of the Week", 
+                                   "Start Hour")
+
+rownames(correlation_matrix) <- colnames(correlation_matrix)  # Apply the same names to the rows
+
+# Create the correlation matrix with modified names
+corrplot(correlation_matrix, 
+         method = "color", 
+         col = colorRampPalette(c("red", "white", "blue"))(200), 
+         type = "full", 
+         order = "hclust", 
+         addCoef.col = "black", 
+         tl.col = "black", 
+         tl.srt = 45, 
+         number.cex = 0.7, 
+         title = "Correlation Matrix", 
+         mar = c(0, 0, 1, 0)
+)
+```
+- User Type and Ride Length: There is a moderate positive correlation (0.22) between user type (member vs. casual) and ride length. This suggests that casual users tend to take longer rides compared to members, which may reflect differing usage patterns and purposes for rides.
+
+- User Type and Day of the Week: The correlation with the day of the week shows a slightly positive relationship (0.12). This suggests that the likelihood of being a causal user may increase on certain days, potentially reflecting patterns in usage.
+
+- Weak Correlations with Other Variables: The correlations between user type and rideable type (-0.04) and hour started (0.05) are weak, implying that these factors do not significantly influence user type.
+
+## 9.2. Linear Regression Analysis for Casual Users
+
+1. Data Filtering
+
+We filter the dataset to include only casual users and extract relevant features.
+
+```{r}
+
+df_casual$started_hour <- as.numeric(format(as.POSIXct(df_casual$started_at), "%H"))
+df_casual$rideable_type <- as.factor(df_casual$rideable_type)
+df_casual$started_day <- as.factor(df_casual$started_day)
+
+head(df_casual)
+```
+
+2. Building the Linear Regression Model
+
+We fit a linear regression model to analyze the relationship between ride length and other factors.
+
+```{r}
+model <- lm(ride_length_minute ~ rideable_type + started_day + started_hour, data = df_casual)
+summary(model)
+```
+
+Key Findings : 
+
+Rideable Type: Electric bikes lead to shorter rides (average decrease of 7.5 minutes).
+Day of the Week: Longer rides on weekends, especially Sunday (+2.9 minutes).
+Hour of the Day: Each additional hour slightly increases ride length.
+Model Fit: The model explains about 5.5% of the variance (low R-squared).
+
+For casual users, shorter rides on electric bikes indicate a preference for quick trips, while longer rides on weekends, especially Sundays, suggest recreational use. Offering weekend memberships or evening discounts could be a good strategy.
+
+## 9.3. Logistic Regression Analysis
+
+1. Modeling Membership Probability
+
+We fit a logistic regression model to understand the factors affecting membership likelihood.
+
+```{r}
+glm_result <- glm(formula = member_casual ~ ride_length_minute + rideable_type + started_day + started_hour, family = binomial, data = df)
+
+glm_result
+```
+
+Ride Length: Each additional minute decreases the odds of being a member (-0.03401).
+Rideable Type: Casual users prefer electric bikes, reducing membership odds (-0.30571).
+Day of the Week:
+Weekdays increase membership likelihood.
+Weekends are more casual-oriented.
+Hour of the Day: Higher hours decrease membership odds (-0.02020).
+
+Conclusion:
+The logistic regression indicates that casual users prefer longer rides, electric bikes, and weekends. Members use bikes more on weekdays for shorter durations.
+
+## 9.4. Clustering Analysis for casual users
+
+In this section, we explore clustering techniques to segment casual users based on their ride patterns, focusing on trip duration, day of use and bike type, as these factors show the highest correlation with casual riding. 
+By identifying groups with similar behaviors, we aim to uncover insights that can drive tailored marketing strategies and service optimizations, encouraging more casual users to transition to memberships.
+
+1. Data Preparation for Clustering
+
+We transform categorical variables into numeric and scale relevant features :
+
+```{r}
+df_casual <- df_casual %>%
+  mutate(
+    rideable_type_numeric = ifelse(rideable_type == "electric_bike", 1, 0),
+  )
+
+df_casual$day_type <- ifelse(df_casual$started_day %in% c("Saturday", "Sunday"), 1, 0) # 1 weekend 0 weekdays
+
+data_cluster <- df_casual %>%
+  select(rideable_type_numeric, ride_length_minute, day_type)
+
+data_cluster_scaled <- scale(data_cluster)
+
+head(data_cluster_scaled)
+```
+
+2. Determining the Number of Clusters
+
+We use the Elbow method to evaluate different numbers of clusters.
+
+
+```{r}
+wss <- numeric(10)
+for (k in 1:10) {
+  kmeans_model <- kmeans(data_cluster_scaled, centers = k, nstart = 25)
+  wss[k] <- kmeans_model$tot.withinss
+}
+plot(1:10, wss, type="b", pch = 19, frame = FALSE, xlab="Number of Clusters K", ylab="Total within-clusters sum of squares")
+
+
+```
+
+Based on this elbow plot, we choose 4 clusters. The "elbow" in the plot appears around K = 4, where the total within-cluster sum of squares shows a significant drop but begins to flatten out beyond that point. 
+Adding more clusters provides diminishing returns in reducing the within-cluster variance, suggesting that 4 clusters are likely sufficient to capture meaningful distinctions within the data.
+
+3. K-Means Clustering Implementation
+
+We perform K-Means clustering and analyze cluster characteristics :
+
+```{r}
+# K-Means Clustering
+set.seed(123)  
+kmeans_result <- kmeans(data_cluster_scaled, centers = 4) # 4 clusters
+
+# we add the cluster labels back to our dataframe
+df_casual$cluster <- as.factor(kmeans_result$cluster)
+
+head(df_casual)
+```
+
+To analyze the patterns of each cluster, we compute summary statistics for each cluster (where day_type = 1 represents weekend days, and rideable_type_numeric = 1 represents electric bikes) :
+
+```{r}
+
+# Summary statistics for each cluster
+aggregate(df_casual[, c("ride_length_minute", "day_type", "rideable_type_numeric")], 
+          by = list(Cluster = df_casual$cluster), 
+          FUN = mean)
+```
+
+Cluster Profiles:
+
+Cluster 1: Riders in this cluster favor electric bikes and opt for short rides (around 12 minutes) during the week, suggesting they may use the bikes for commuting or work-related purposes.
+
+Cluster 2: Riders in this cluster favor electric bikes and opt for moderate rides (around 14 minutes), particularly on weekends.
+
+Cluster 3: These riders prefer classic bikes and tend to take moderately short rides (about 15 minutes), across both weekdays and weekends. This pattern suggests versatility in usage, likely encompassing a mix of functional and recreational trips.
+
+Cluster 4: These riders predominantly use classic bikes and engage in longer rides (about 1 hour), indicating a potential interest in recreational rides or fitness activities.
+
+This structured breakdown helps differentiate between the types of rides and user behaviors in each cluster.
+
+Targeted Marketing Suggestions :
+
+Cluster 1 (Electric Bike Users on Weekdays, short rides):
+
+Highlight convenience: Emphasize the speed and efficiency of electric bikes for commuters.
+Weekday commuter deals with electric bikes: Offer weekday promotions for regular riders.
+Corporate partnerships: Collaborate with companies to encourage bike commuting.
+
+Cluster 2 (Electric bike Users on Weekends, medium rides) :
+
+Promote Weekend Adventures: Highlight shorter, scenic routes that can be completed quickly, perfect for a weekend getaway.
+Discounted Weekend Passes: Introduce special pricing or packages for weekend rentals to encourage more usage.
+
+Cluster 3 (Classic Bike Users, medium rides):
+
+Flexible Membership Options: Provide customizable membership plans that offer flexibility for both weekday and weekend use, appealing to users who blend commuting with recreational rides.
+
+Cluster 4 (Classic Bike Users, very long rides):
+Promote recreational and fitness rides: Focus on longer, scenic routes and fitness benefits.
+Fitness brand collaborations: Partner with health and wellness brands to enhance the appeal of classic bikes for exercise.
+Discounted long ride passes: Introduce special pricing or packages for rides exceeding 30 minutes.
+
+4. Visualizations for Clustering Analysis
+
+We create scatter plots to visualize clusters based on ride length, day of use, and type of bike :
+
+```{r}
+set.seed(123)  # Set seed for reproducibility
+df_sample <- df_casual %>% sample_frac(0.0005)
+
+# Create the scatter plot
+ggplot(df_sample, aes(x = started_day, y = ride_length_minute, color = factor(cluster))) +
+  # Points for electric bikes with jitter for better separation
+  geom_point(data = df_sample %>% filter(rideable_type_numeric == 1),
+             aes(shape = "Electric Bike"), 
+             size = 4, 
+             stroke = 1.5, 
+             fill = "yellow", 
+             alpha = 0.7, 
+             position = position_jitter(width = 0.4, height = 0)) +  # Jitter for electric bikes
+  # Points for classic bikes with jitter for better separation
+  geom_point(data = df_sample %>% filter(rideable_type_numeric == 0),
+             aes(shape = "Classic Bike"), 
+             size = 4, 
+             stroke = 1.5, 
+             fill = "black", 
+             alpha = 0.7, 
+             position = position_jitter(width = 0.4, height = 0)) +  # Jitter for classic bikes
+
+  # Customize color scale for clusters
+  scale_color_brewer(palette = "Set1", name = "Cluster") +  # Color palette for clusters
+  labs(title = "Bike Usage Patterns by Day and Ride Length (Sampled Data)",
+       x = "Day of the Week",
+       y = "Ride Length (minutes)") +
+  theme_minimal() +
+  theme(legend.position = "right")  # Position the legend for clarity
+
+
+
+```
+
+Next, we compare the number of rides in each cluster :
+
+```{r}
+# Calculate proportions for each cluster
+df_cluster_counts <- as.data.frame(table(df_casual$cluster)) %>%
+  rename(cluster = Var1, count = Freq) %>%
+  mutate(proportion = count / sum(count) * 100)
+
+# Define colors 
+cluster_colors <- c("1" = "#E41A1C",  # Red from Set1
+                    "2" = "#377EB8",  # Blue from Set1
+                    "3" = "#4DAF4A",  # Green from Set1
+                    "4" = "#984EA3")  # Purple from Set1
+
+# Plot pie chart 
+ggplot(df_cluster_counts, aes(x = "", y = proportion, fill = factor(cluster))) +
+  geom_bar(width = 1, stat = "identity", color = NA, alpha = 0.7) +  # Slight transparency with alpha
+  coord_polar("y") +
+  geom_text(aes(label = paste("Cluster", cluster, "\n", round(proportion, 1), "%")), 
+            position = position_stack(vjust = 0.5), size = 5, color = "white") +
+  labs(title = "Proportion of Observations by Cluster") +
+  theme_void() +
+  scale_fill_manual(values = cluster_colors) +  # Apply custom colors
+  theme(legend.position = "none",
+        plot.title = element_text(size = 18, face = "bold", hjust = 0.5, color = "black")
+        )  # Remove legend,
+
+```
+
+Around 40% of rides made by casual riders are part of cluster 3, 34% in cluster 1, 17% in cluster 2, and 8% in cluster 4. This distribution indicates that a substantial proportion of casual users engage in versatile riding habits.
+
+We create heatmaps to show usage by hour and day for each cluster :
+
+```{r}
+
+dayhour_cluster1 <- ggplot(df_casual %>% filter(cluster == "1"), 
+       aes(x = as.numeric(format(as.POSIXct(started_at), "%H")), y = started_day, fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 24) + 
+  scale_fill_viridis_c() +
+  labs(title = " Usage by Hour and Day (Cluster 1)", x = "Hour", y = "Day") + 
+  theme_minimal()
+
+dayhour_cluster2 <- ggplot(df_casual %>% filter(cluster == "2"), 
+       aes(x = as.numeric(format(as.POSIXct(started_at), "%H")), y = started_day, fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 24) + 
+  scale_fill_viridis_c() +
+  labs(title = "Usage by Hour and Day (Cluster 2)", x = "Hour", y = "Day") + 
+  theme_minimal()
+
+dayhour_cluster3 <- ggplot(df_casual %>% filter(cluster == "3"), 
+       aes(x = as.numeric(format(as.POSIXct(started_at), "%H")), y = started_day, fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 24) + 
+  scale_fill_viridis_c() +
+  labs(title = "Usage by Hour and Day (Cluster 3)", x = "Hour", y = "Day") + 
+  theme_minimal()
+
+dayhour_cluster4 <- ggplot(df_casual %>% filter(cluster == "4"), 
+       aes(x = as.numeric(format(as.POSIXct(started_at), "%H")), y = started_day, fill = ..count..)) + 
+  geom_tile(stat = "bin2d", bins = 24) + 
+  scale_fill_viridis_c() +
+  labs(title = "Usage by Hour and Day (Cluster 4)", x = "Hour", y = "Day") + 
+  theme_minimal()
+
+
+```
+```{r}
+dayhour_cluster1
+```
+```{r}
+dayhour_cluster2
+```
+```{r}
+dayhour_cluster3
+```
+```{r}
+dayhour_cluster4
+```
+```{r}
+ggplot(df_casual, aes(x = started_hour, fill = factor(cluster))) +
+  geom_histogram(binwidth = 1, alpha = 0.7, position = "dodge") + 
+  labs(title = "Hourly Distribution of Bike Usage by Cluster",
+       x = "Hour of the Day",
+       y = "Frequency of Rides",
+       fill = "Cluster") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal() +
+  facet_wrap(~ cluster)  
+```
+Cluster 1 displays peak usage during typical commuting hours, specifically around 7 AM and 4 PM. This indicates a significant proportion of users in this cluster are likely commuters. Conversely, Cluster 3 also shows a notable increase in activity around 4 PM.
+
+In contrast, Clusters 2 and 4 exhibit a more gradual rise in ride frequency, peaking around 2 PM before tapering off. This could suggest a more recreational or leisurely approach to biking, possibly for users who are less concerned with strict commuting times. 
+
+The distribution confirms our hypothesis about the differing usage patterns across clusters, highlighting the need for targeted engagement strategies that cater to each group's distinct preferences.
+
+
+```{r}
+
+# New colomn to identify loop rides
+df_casual_loop <- df_casual %>%
+  mutate(is_loop = ifelse(!is.na(start_station_name) & !is.na(end_station_name) & 
+         start_station_name == end_station_name & 
+         !is.na(start_lng) & !is.na(start_lat) & 
+         trimws(start_station_name) != "" & 
+         trimws(end_station_name) != "", 1, 0))
+
+# Calculate loop rides and total rides for each cluster
+loops_counts_casual <- df_casual_loop %>%
+  group_by(cluster) %>%
+  summarise(loop_rides = sum(is_loop),
+            total_rides = n(),
+            proportion_loops = loop_rides / total_rides)  # Proportion of loop rides as percentage
+
+loops_counts_casual
+
+# Create a bar chart to visualize the proportion of loop rides by cluster
+ggplot(loops_counts_casual, aes(x = factor(cluster), y = proportion_loops, fill = factor(cluster))) +
+  geom_bar(stat = "identity") +
+  labs(title = "Loop Rides Proportion by Cluster",
+       x = "Cluster",
+       y = "Proportion (%)") +
+  scale_y_continuous(labels = scales::percent_format(scale = 100)) +  # Format y-axis as percentage
+  theme_minimal() +
+  theme(legend.position = "none")  # Optional: remove legend if desired
+
+```
+The analysis of loop rides provides further insights into user behavior. The table shows that Cluster 4 has more than 20% of rides categorized as loop rides, indicating a strong pattern among these users who likely enjoy repetitive or circular routes. This suggests an opportunity for targeted marketing strategies focused on enhancing user experiences for these casual riders.
+
+Cluster 3 also exhibits 6% of loop rides, demonstrating flexibility in usage, which may point to users who value both commuting and recreational aspects of biking. Meanwhile, Clusters 1 and 2 have less than 3% of loop rides, indicating that these users primarily engage in distinct ride patterns rather than repetitive routes.
+
+```{r}
+# Round coordinates for better clarity in visualization
+df_casual_filtered <- df_casual %>%
+  mutate(start_lng = round(start_lng, 5),
+         start_lat = round(start_lat, 5))
+
+# Create the heatmap for each cluster of casual users
+rcasual_heatmap <- ggplot(df_casual_filtered, aes(x = start_lng, y = start_lat)) +
+  stat_bin2d(bins = 30, aes(fill = after_stat(count)), alpha = 0.9) +
+  scale_fill_viridis_c(name = "Number of Rides") +
+  labs(title = "Casual Users Ride Starts by Cluster",
+       x = "Longitude",
+       y = "Latitude") +
+  coord_fixed() + 
+  theme_minimal(base_size = 14, base_family = "Arial") +
+  facet_wrap(~ cluster)  # Add facets by cluster
+
+# Display the plot
+rcasual_heatmap
+```
+
